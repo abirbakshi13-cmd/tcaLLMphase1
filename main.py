@@ -38,6 +38,7 @@ def infer(payload: InferInput):
     # Input Schema (Spec Lines 23-27)
     # Output Schema (Spec Lines 28-36)
     # Inference Layer requirement: access LLM via API (Spec 6, 10)
+    # Using Gemini via OpenAI-compatibility layer for Week 1 Inference Flow.
     snippets = retrieve(payload.query, VECTOR_STORE, top_k=3)
     if not snippets:
         return {"response": INSUFFICIENT_INFO, "sources": []}
@@ -45,7 +46,10 @@ def infer(payload: InferInput):
     context = "\n\n".join(
         f"[DOC: {item.doc_id}]\n{item.snippet}" for item in snippets
     )
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(
+        api_key=os.getenv("GEMINI_API_KEY"),
+        base_url=os.getenv("GEMINI_BASE_URL"),
+    )
     system_prompt = (
         "You are a Passenger Rights Advocate helping with airline travel "
         "legal issues based on their Contract of Carriage. Answer clearly "
@@ -54,7 +58,7 @@ def infer(payload: InferInput):
         f"respond exactly with: {INSUFFICIENT_INFO}"
     )
     completion = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gemini-3-flash-preview",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Context:\n{context}\n\nQuery:\n{payload.query}"},

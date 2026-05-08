@@ -65,7 +65,14 @@ def infer(payload: InferInput):
         latency_ms = (time.perf_counter() - start_time) * 1000
         _update_metrics(latency_ms=latency_ms, source_relevance=False, hallucinated=False)
         logger.info(
-            "infer",
+            (
+                "INFER | Latency: %.2fms | Query: %s... | Status: %s"
+                % (
+                    latency_ms,
+                    payload.query[:50],
+                    "Fallback" if response_text == INSUFFICIENT_INFO else "Success",
+                )
+            ),
             extra={
                 "user_query": payload.query,
                 "retrieved_context": context,
@@ -97,7 +104,14 @@ def infer(payload: InferInput):
     if response_text.strip() == INSUFFICIENT_INFO:
         _update_metrics(latency_ms=latency_ms, source_relevance=False, hallucinated=False)
         logger.info(
-            "infer",
+            (
+                "INFER | Latency: %.2fms | Query: %s... | Status: %s"
+                % (
+                    latency_ms,
+                    payload.query[:50],
+                    "Fallback" if response_text == INSUFFICIENT_INFO else "Success",
+                )
+            ),
             extra={
                 "user_query": payload.query,
                 "retrieved_context": context,
@@ -123,7 +137,14 @@ def infer(payload: InferInput):
         hallucinated=hallucinated,
     )
     logger.info(
-        "infer",
+        (
+            "INFER | Latency: %.2fms | Query: %s... | Status: %s"
+            % (
+                latency_ms,
+                payload.query[:50],
+                "Fallback" if response_text == INSUFFICIENT_INFO else "Success",
+            )
+        ),
         extra={
             "user_query": payload.query,
             "retrieved_context": context,

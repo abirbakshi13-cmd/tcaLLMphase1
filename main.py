@@ -1,5 +1,8 @@
+import logging
 import os
+import time
 from pathlib import Path
+from typing import Dict, List
 
 from fastapi import FastAPI
 from openai import OpenAI
@@ -11,6 +14,18 @@ from scripts.retrieval import build_vector_store, retrieve
 app = FastAPI(title="TCA ML Workshop: Passenger Rights Advocate")
 
 load_dotenv()
+
+logger = logging.getLogger("monitoring")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
+
+METRICS: Dict[str, float] = {
+    "total_requests": 0,
+    "total_latency_ms": 0,
+    "source_relevance_hits": 0,
+    "hallucination_count": 0,
+}
+FAILURE_CASES: List[Dict[str, str]] = []
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 VECTOR_STORE = build_vector_store(str(DATA_DIR))
@@ -39,13 +54,26 @@ def infer(payload: InferInput):
     # Output Schema (Spec Lines 28-36)
     # Inference Layer requirement: access LLM via API (Spec 6, 10)
     # Using Gemini via OpenAI-compatibility layer for Week 1 Inference Flow.
+    # Monitoring Workflow requirement (Spec Line 97)
+    start_time = time.perf_counter()
     snippets = retrieve(payload.query, VECTOR_STORE, top_k=3)
-    if not snippets:
-        return {"response": INSUFFICIENT_INFO, "sources": []}
-
     context = "\n\n".join(
         f"[DOC: {item.doc_id}]\n{item.snippet}" for item in snippets
     )
+    if not snippets:
+        response_text = INSUFFICIENT_INFO
+        latency_ms = (time.perf_counter() - start_time) * 1000
+        _update_metrics(latency_ms=latency_ms, source_relevance=False, hallucinated=False)
+        logger.info(
+            "infer",
+            extra={
+                "user_query": payload.query,
+                "retrieved_context": context,
+                "llm_response": response_text,
+                "latency_ms": round(latency_ms, 2),
+            },
+        )
+        return {"response": INSUFFICIENT_INFO, "sources": []}
     client = OpenAI(
         api_key=os.getenv("GEMINI_API_KEY"),
         base_url=os.getenv("GEMINI_BASE_URL"),
@@ -65,10 +93,85 @@ def infer(payload: InferInput):
         ],
     )
     response_text = completion.choices[0].message.content or ""
+    latency_ms = (time.perf_counter() - start_time) * 1000
     if response_text.strip() == INSUFFICIENT_INFO:
+        _update_metrics(latency_ms=latency_ms, source_relevance=False, hallucinated=False)
+        logger.info(
+            "infer",
+            extra={
+                "user_query": payload.query,
+                "retrieved_context": context,
+                "llm_response": INSUFFICIENT_INFO,
+                "latency_ms": round(latency_ms, 2),
+            },
+        )
         return {"response": INSUFFICIENT_INFO, "sources": []}
 
     sources = [
         {"doc_id": item.doc_id, "snippet": item.snippet} for item in snippets
     ]
+    hallucinated = _detect_hallucination(response_text, context)
+    _update_metrics(
+        latency_ms=latency_ms,
+        source_relevance=True,
+        hallucinated=hallucinated,
+    )
+    _record_failure_case(
+        query=payload.query,
+        context=context,
+        response=response_text,
+        hallucinated=hallucinated,
+    )
+    logger.info(
+        "infer",
+        extra={
+            "user_query": payload.query,
+            "retrieved_context": context,
+            "llm_response": response_text,
+            "latency_ms": round(latency_ms, 2),
+        },
+    )
     return {"response": response_text, "sources": sources}
+
+
+def _update_metrics(latency_ms: float, source_relevance: bool, hallucinated: bool) -> None:
+    METRICS["total_requests"] += 1
+    METRICS["total_latency_ms"] += latency_ms
+    if source_relevance:
+        METRICS["source_relevance_hits"] += 1
+    if hallucinated:
+        METRICS["hallucination_count"] += 1
+
+
+def _detect_hallucination(response_text: str, context: str) -> bool:
+    if not context.strip():
+        return response_text.strip() != INSUFFICIENT_INFO
+
+    response_terms = {term for term in response_text.lower().split() if len(term) > 4}
+    context_terms = {term for term in context.lower().split() if len(term) > 4}
+    if not response_terms:
+        return False
+
+    overlap_ratio = len(response_terms & context_terms) / len(response_terms)
+    return overlap_ratio < 0.1
+
+
+def _record_failure_case(
+    query: str,
+    context: str,
+    response: str,
+    hallucinated: bool,
+) -> None:
+    if not hallucinated:
+        return
+
+    FAILURE_CASES.append(
+        {
+            "type": "hallucination_or_mismatch",
+            "query": query,
+            "context": context,
+            "response": response,
+        }
+    )
+    if len(FAILURE_CASES) > 10:
+        FAILURE_CASES.pop(0)
